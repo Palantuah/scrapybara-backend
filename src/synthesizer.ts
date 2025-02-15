@@ -6,7 +6,16 @@ import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { parse } from 'csv-parse/sync';
 
-dotenv.config();
+// Change .env to .env.local
+dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
+
+// Add validation for required environment variables
+const requiredEnvVars = ['OPENAI_API_KEY'];
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    throw new Error(`Missing required environment variable: ${envVar}`);
+  }
+}
 
 const CSV_FILE = path.join(__dirname, '..', 'email_database.csv');
 const REPORTS_DIR = path.join(__dirname, '..', 'outputs', 'category_reports');
@@ -75,15 +84,38 @@ DO NOT include information from other sectors or categories unless it directly i
     const { text } = await generateText({
       model: openai('gpt-4o-mini'),
       messages: [
-        { role: 'system', content: 'You are an expert newsletter writer who creates comprehensive industry analysis.' },
+        { role: 'system', content: 'You are an expert newsletter writer who creates comprehensive newsletters for users using as much of the same language and format as possible of the original documents.' },
         { role: 'user', content: prompt }
       ]
     });
     console.log('Received response from OpenAI');
 
+    // After getting the analysis, extract keywords using GPT
+    console.log('Extracting keywords from analysis...');
+    const { text: keywordsText } = await generateText({
+      model: openai('gpt-4o-mini'),
+      messages: [
+        { role: 'system', content: 'You are an expert at identifying key topics and themes.' },
+        { role: 'user', content: `From the following ${category} newsletter, identify the 5-7 most important topics/keywords. 
+        Format your response as a simple comma-separated list with no explanations or additional text.
+        
+        Newsletter:
+        ${text}` }
+      ]
+    });
+
+    // Clean up the keywords response
+    const keywords = keywordsText
+      .split(',')
+      .map(k => k.trim())
+      .filter(k => k.length > 0);
+    
+    console.log('Extracted keywords:', keywords);
+
     return {
       entries,
-      analysis: text
+      analysis: text,
+      keywords
     };
   } catch (error: any) {
     console.error('Error in generateNewsletter:', error);
@@ -124,6 +156,7 @@ async function updateCategoryNewsletter(category: string, content: string) {
       category,
       entries: updatedData.entries,
       analysis: updatedData.analysis,
+      keywords: updatedData.keywords,
       lastUpdated: new Date().toISOString()
     }, null, 2);
 

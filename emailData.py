@@ -17,6 +17,8 @@ SENDER_CATEGORIES = {
     "cnbc": "Finance",               # CNBC
     "seekingalpha": "Finance",       # Seeking Alpha
     "bloomberg": "Finance",          # Bloomberg
+    "noah.pan": "Finance",          # Noah Pan
+    "noahps": "Finance",           # Noah Pan
  
 
     # Creative
