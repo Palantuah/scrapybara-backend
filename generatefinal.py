@@ -89,30 +89,56 @@ def load_category_analyses(directory: str, categories: list) -> dict:
 
 def generate_newsletter_draft(analyses: dict) -> str:
     """
-    Use OpenAI GPT-4 to generate a final newsletter from all our categories and their analyses. The newsletter should have clear sections for each category and be engaging and interesting.
+    Generate newsletter using only categories that were loaded and their content
     """
-    # Construct the prompt for GPT-4
-    # We include each category and its analysis. Prompt GPT-4 to write an engaging newsletter covering all categories.
+    # Get actual categories from the analyses dict
+    available_categories = list(analyses.keys())
+    
+    # Build content sections with clear category separation
     content_sections = []
-    for cat, analysis in analyses.items():
-        # Prepare each section input as "Category: [Name]\n[Analysis]"
-        section_text = f"Category: {cat}\n{analysis}"
-        content_sections.append(section_text)
+    for category, analysis in analyses.items():
+        section = f"Category: {category}\nContent:\n{analysis}"
+        content_sections.append(section)
     combined_content = "\n\n".join(content_sections)
+    
+    # Build category-specific prompt sections
+    category_sections = "\n".join([
+        f"- {category}" for category in available_categories
+    ])
 
-    user_prompt = (
-        "You are a seasoned newsletter writer. Using the information provided for each category, "
-        "create an engaging, well-structured newsletter. The newsletter should have clear sections for each category, "
-        "use a friendly, human-like tone, and keep each section interesting and mostly factual each section should be 400-500 words. "
-        "Do NOT include any code, JSON, or markdown formatting in the output; just write plain text. \n\n"
-        f"Information for the newsletter:\n{combined_content}\n\n"
-        "Now please complete the final newsletter."
-    )
+    system_prompt = f"""You are creating a daily digest newsletter that synthesizes content from exactly these categories:
+{category_sections}
+
+KEY RULES:
+1. ONLY include content from the provided source materials
+2. NEVER generate content not present in sources
+3. ONLY cover these specific categories
+4. Maintain original details and facts
+5. Group content by these exact category names"""
+
+    user_prompt = f"""Create a multi-category newsletter from ONLY the provided content. For each category:
+
+1. Use only information from that category's source content
+2. Do not add any information not present in sources
+3. Group under these exact category headings:
+{category_sections}
+4. STRICTLY maintain 400-500 words per section - this is crucial
+5. Use a friendly, engaging tone while maintaining factual accuracy
+
+IMPORTANT LENGTH REQUIREMENT:
+- Each section MUST be between 400-500 words
+- Current categories requiring 400-500 words each: {category_sections}
+- Total length should be {len(analyses) * 450} words approximately
+
+Content to synthesize by category:
+{combined_content}"""
 
     messages = [
-        {"role": "system", "content": "You are a helpful assistant and expert writer who crafts newsletters."},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
+
+    # Increase max_tokens to ensure we get full-length content
     try:
         logger.info(json.dumps({"event": "draft_generation_start"}))
         client = openai.OpenAI()
@@ -120,10 +146,9 @@ def generate_newsletter_draft(analyses: dict) -> str:
             model="gpt-4",
             messages=messages,
             temperature=0.7,
-            max_tokens=1500
+            max_tokens=4000  # Increased to accommodate longer sections
         )
     except Exception as e:
-        # Log and re-raise the error if GPT-4 API call fails
         logger.error(json.dumps({
             "event": "error",
             "stage": "draft_generation",
@@ -132,7 +157,6 @@ def generate_newsletter_draft(analyses: dict) -> str:
         }))
         raise
 
-    # Extract the draft text
     draft_text = response.choices[0].message.content.strip()
     finish_reason = response.choices[0].finish_reason
     logger.info(json.dumps({
@@ -140,6 +164,7 @@ def generate_newsletter_draft(analyses: dict) -> str:
         "finish_reason": finish_reason,
         "tokens_used": response.usage.total_tokens if hasattr(response, "usage") else None
     }))
+    
     if finish_reason == "length":
         logger.warning(json.dumps({
             "event": "warning",
@@ -156,10 +181,16 @@ def evaluate_newsletter(content: str) -> tuple:
         "You are an AI assistant evaluating a newsletter draft. "
         "Here is the newsletter content:\n\n"
         f"{content}\n\n"
-        "Please provide:\n"
-        "1. An overall score from 1-10 for the newsletter quality\n"
+        "You MUST provide:\n"
+        "1. A numerical score from 1-10 (you must give a number)\n"
         "2. 2-3 specific suggestions for improving the newsletter\n\n"
-        "Format your response like this:\n"
+        "Your response MUST start with 'Score: ' followed by a number, then 'Suggestions:' on a new line.\n\n"
+        "Evaluate based on:\n"
+        "- Section lengths (should be 400-500 words each)\n"
+        "- Writing quality and engagement\n"
+        "- Factual accuracy and detail preservation\n"
+        "- Overall structure and flow\n\n"
+        "Format exactly like this:\n"
         "Score: [number]\n"
         "Suggestions:\n"
         "- [first suggestion]\n"
@@ -180,17 +211,28 @@ def evaluate_newsletter(content: str) -> tuple:
         eval_content = response.content[0].text if response.content else ""
         logger.info(json.dumps({"event": "evaluation_done"}))
 
-        # Extract score and suggestions using regex
-        score = None
-        suggestions = eval_content
-
-        # Try to find the score
+        # Extract score - now with stricter parsing
         score_match = re.search(r'Score:\s*(\d+(?:\.\d+)?)', eval_content, re.IGNORECASE)
-        if score_match:
-            try:
-                score = float(score_match.group(1))
-            except ValueError:
-                score = None
+        if not score_match:
+            # If no score found, try again with a more direct prompt
+            logger.warning(json.dumps({
+                "event": "warning",
+                "message": "No score found in evaluation, retrying with direct prompt"
+            }))
+            response = client.messages.create(
+                model="claude-2",
+                max_tokens=100,
+                temperature=0.0,
+                messages=[{
+                    "role": "user", 
+                    "content": "Based on the newsletter you just evaluated, give ONLY a number from 1-10. Just the number, nothing else:"
+                }]
+            )
+            retry_content = response.content[0].text if response.content else ""
+            score_match = re.search(r'(\d+(?:\.\d+)?)', retry_content)
+
+        score = float(score_match.group(1)) if score_match else 5.0  # Default to 5 if still no score
+        suggestions = eval_content
 
         logger.info(json.dumps({
             "event": "evaluation_processed",
@@ -213,20 +255,46 @@ def refine_newsletter(draft: str, feedback: str) -> str:
     Use GPT-4 to refine the newsletter draft based on Claude's feedback.
     Returns the refined newsletter draft text.
     """
-    refine_prompt = (
-        "Here is a newsletter draft that needs improvement:\n\n"
+    # Get the categories from the current draft
+    categories = []
+    for line in draft.split('\n'):
+        if line.strip() in SELECTED_CATEGORIES:
+            categories.append(line.strip())
+    
+    category_sections = "\n".join([
+        f"- {category}" for category in categories
+    ])
+
+    system_prompt = f"""You are creating a daily digest newsletter that synthesizes content from exactly these categories:
+{category_sections}
+
+KEY RULES:
+1. ONLY include content from the provided source materials
+2. NEVER generate content not present in sources
+3. ONLY cover these specific categories
+4. Maintain original details and facts
+5. Group content by these exact category names
+
+IMPROVEMENT FEEDBACK TO ADDRESS:
+{feedback}"""
+
+    user_prompt = (
+        "Here is the current newsletter draft that needs improvement:\n\n"
         f"{draft}\n\n"
-        "And here is feedback for improvement:\n\n"
-        f"{feedback}\n\n"
-        "Please refine the newsletter draft according to the feedback. "
-        "Maintain the engaging tone and clear structure, and address all the suggestions. "
-        "Do not include the feedback text in the output, just provide the improved newsletter. "
-        "Ensure the final output is in plain text."
+        "Please refine this newsletter draft while:\n"
+        "1. Maintaining all factual content\n"
+        "2. Addressing the improvement feedback\n"
+        "3. Keeping each section 400-500 words\n"
+        "4. Using the same category structure\n"
+        "5. Ensuring a friendly, engaging tone\n\n"
+        "Provide the improved newsletter in plain text format."
     )
+
     messages = [
-        {"role": "system", "content": "You are a skilled writer who can revise content based on critique to improve its quality."},
-        {"role": "user", "content": refine_prompt}
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
     ]
+
     try:
         logger.info(json.dumps({"event": "refinement_start"}))
         client = openai.OpenAI()
@@ -258,6 +326,131 @@ def refine_newsletter(draft: str, feedback: str) -> str:
             "message": "Refined draft may be truncated due to token limit."
         }))
     return refined_text
+
+def generate_newsletter(category_dir: str, categories: list, openai_key: str, anthropic_key: str) -> tuple[str, float]:
+    """
+    Generate a newsletter from category analyses with specified categories.
+    
+    Args:
+        category_dir (str): Directory containing category JSON files
+        categories (list): List of categories to include
+        openai_key (str): OpenAI API key
+        anthropic_key (str): Anthropic API key
+    
+    Returns:
+        tuple[str, float]: (newsletter_text, final_score)
+    """
+    try:
+        # Set API keys
+        openai.api_key = openai_key
+        os.environ["ANTHROPIC_API_KEY"] = anthropic_key
+
+        # Load category analyses
+        analyses = {}
+        categories_lower = [cat.lower() for cat in categories]
+        
+        for filename in os.listdir(category_dir):
+            if not filename.lower().endswith(".json"):
+                continue
+                
+            category_name = os.path.splitext(filename)[0].lower()
+            if category_name not in categories_lower:
+                continue
+
+            filepath = os.path.join(category_dir, filename)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    original_category = next(cat for cat in categories if cat.lower() == category_name)
+                    analysis_text = data.get("analysis")
+                    if analysis_text:
+                        analyses[original_category] = analysis_text
+            except Exception as e:
+                logger.error(f"Failed to load {filepath}: {str(e)}")
+                continue
+
+        if not analyses:
+            raise ValueError("No category analyses found")
+
+        # Generate initial draft
+        available_categories = list(analyses.keys())
+        content_sections = [f"Category: {cat}\nContent:\n{text}" for cat, text in analyses.items()]
+        combined_content = "\n\n".join(content_sections)
+        category_sections = "\n".join([f"- {cat}" for cat in available_categories])
+
+        system_prompt = f"""You are creating a daily digest newsletter that synthesizes content from exactly these categories:
+{category_sections}
+
+KEY RULES:
+1. ONLY include content from the provided source materials
+2. NEVER generate content not present in sources
+3. ONLY cover these specific categories
+4. Maintain original details and facts
+5. Group content by these exact category names"""
+
+        user_prompt = f"""Create a multi-category newsletter from ONLY the provided content. For each category:
+
+1. Use only information from that category's source content
+2. Do not add any information not present in sources
+3. Group under these exact category headings:
+{category_sections}
+4. STRICTLY maintain 400-500 words per section - this is crucial
+5. Use a friendly, engaging tone while maintaining factual accuracy
+
+IMPORTANT LENGTH REQUIREMENT:
+- Each section MUST be between 400-500 words
+- Current categories requiring 400-500 words each: {category_sections}
+- Total length should be {len(analyses) * 450} words approximately
+
+Content to synthesize by category:
+{combined_content}"""
+
+        client = openai.OpenAI()
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.7,
+            max_tokens=4000
+        )
+
+        newsletter = response.choices[0].message.content.strip()
+
+        # Evaluate with Claude
+        eval_prompt = (
+            "You are an AI assistant evaluating a newsletter draft. "
+            "Here is the newsletter content:\n\n"
+            f"{newsletter}\n\n"
+            "You MUST provide:\n"
+            "1. A numerical score from 1-10 (you must give a number)\n"
+            "2. 2-3 specific suggestions for improving the newsletter\n\n"
+            "Your response MUST start with 'Score: ' followed by a number.\n\n"
+            "Evaluate based on:\n"
+            "- Section lengths (should be 400-500 words each)\n"
+            "- Writing quality and engagement\n"
+            "- Factual accuracy and detail preservation\n"
+            "- Overall structure and flow"
+        )
+
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model="claude-2",
+            max_tokens=1000,
+            temperature=0.0,
+            messages=[{"role": "user", "content": eval_prompt}]
+        )
+        
+        eval_content = response.content[0].text if response.content else ""
+        score_match = re.search(r'Score:\s*(\d+(?:\.\d+)?)', eval_content, re.IGNORECASE)
+        score = float(score_match.group(1)) if score_match else 5.0
+
+        return newsletter, score
+
+    except Exception as e:
+        logger.error(f"Newsletter generation failed: {str(e)}")
+        raise
 
 def main():
     logger.info(json.dumps({"event": "start_newsletter_generation"}))
