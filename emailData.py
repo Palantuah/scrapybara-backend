@@ -19,44 +19,34 @@ SENDER_CATEGORIES = {
     "seekingalpha": "Finance",       # Seeking Alpha
     "bloomberg": "Finance",          # Bloomberg
 
-
-    # Creative
-    "creativeindependent": "Creative", #creative independent
-    "design-milk": "Creative", #design milk
-    "creativebloq": "Creative", #creative bloq
-    "colossal": "Creative", #colossal
-    "aiga": "Creative", #aiga
-    "creativeboom": "Creative", #creative boom
-
     # Global News
-    "reuters": "Global News", #reuters
-    "bbc": "Global News", #bbc
-    "apnews": "Global News", #ap news
-    "time": "Global News", #time
+    "reuters": "Global News",        # Reuters
+    "bbc": "Global News",           # BBC
+    "apnews": "Global News",        # AP News
+    "time": "Global News",          # Time
 
     # US News
-    "nytimes": "US News", #ny times
-    "washingtonpost": "US News", #washington post   
-    "theguardian": "US News", #the guardian
-    "cnn": "US News", #cnn
-    "politico": "US News", #politico
-    "axios": "US News", #axios
-    "usatoday": "US News", #usa today
-    "nytimes": "US News", #ny times
+    "nytimes": "US News",           # NY Times
+    "washingtonpost": "US News",    # Washington Post
+    "theguardian": "US News",       # The Guardian
+    "cnn": "US News",               # CNN
+    "politico": "US News",          # Politico
+    "axios": "US News",             # Axios
+    "usatoday": "US News",          # USA Today
 
     # Tech
-    "techcrunch": "Tech", #techcrunch
-    "theverge": "Tech", #the verge
-    "wired": "Tech", #wired
-    "thedownload": "Tech", #the download
-    "morningbrew": "Tech", #morning brew
-    "engadget": "Tech", #engadget
+    "techcrunch": "Tech",           # TechCrunch
+    "theverge": "Tech",             # The Verge
+    "wired": "Tech",                # Wired
+    "thedownload": "Tech",          # The Download
+    "morningbrew": "Tech",          # Morning Brew
+    "engadget": "Tech",             # Engadget
 
     # Sports
-    "morningblitz": "Sports", #morning blitz
-    "yahoosports": "Sports", #yahoo sports
-    "cbssports": "Sports", #cbssports
-    "thesportsletter.com": "Sports", #the sports letter
+    "morningblitz": "Sports",       # Morning Blitz
+    "yahoosports": "Sports",        # Yahoo Sports
+    "cbssports": "Sports",          # CBS Sports
+    "thesportsletter.com": "Sports" # The Sports Letter
 }
 
 def get_sender_category(from_address):
@@ -192,7 +182,7 @@ def main():
                 all_emails = []
                 for category, emails in categorized_emails.items():
                     # Only process valid categories
-                    if category in ["Finance", "Creative", "Global News", "US News", "Tech", "Sports"]:
+                    if category in ["Finance", "Global News", "US News", "Tech", "Sports"]:
                         # Clean each email's content before adding
                         for email_item in emails:
                             email_item['Body'] = clean_content(email_item['Body'])

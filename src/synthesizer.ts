@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { parse } from 'csv-parse/sync';
+import { Anthropic } from '@anthropic-ai/sdk';
 
 // Use .env.local
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
@@ -47,6 +48,11 @@ let headerLine = "";
 
 // Cache the last CSV hash to skip unchanged processing
 let lastCsvHash = "";
+
+// Initialize Anthropic client
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY
+});
 
 // Helper function for delay
 function delay(ms: number): Promise<void> {
@@ -132,8 +138,8 @@ ${generatedText}`;
 
     // Split response into individual keywords/phrases
     const keywords = keywordResponse.split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0)
+      .map((line: string) => line.trim())
+      .filter((line: string) => line.length > 0)
       .slice(0, 7);  // Keep max 7 keywords
 
     return {
@@ -156,22 +162,111 @@ ${generatedText}`;
  * Loads existing JSON data for a category, generates an updated newsletter,
  * and writes the result to a file.
  */
-async function updateCategoryNewsletter(category: string, content: string, existingData?: any) {
+async function updateCategoryNewsletter(category: string, allContent: string, existingData: any) {
+  const systemPrompt = `You are writing the FINAL VERSION of a ${category} newsletter. Your key directives:
+
+1. CONTENT ORGANIZATION
+- Present biggest impact items first
+- Group logically related items
+- Connect developments through natural narrative flow
+- Keep market/financial data properly contextualized
+- Present a coherent story, not disconnected updates
+
+2. WRITING APPROACH
+- Write as a single coherent piece
+- Never reference or attribute source materials
+- Keep exact numbers and key details
+- Use clear section transitions
+- Maintain consistent depth throughout
+
+3. STYLE SPECIFICS
+- Write in active voice
+- Use present tense for immediacy
+- Keep paragraphs short (2-3 sentences)
+- Include specific data points naturally
+- Avoid introductory or meta-commentary
+
+4. STRUCTURE 
+- Start with major developments
+- Group related items under clear themes
+- Use minimal formatting
+- End with clear implications
+- No promotional content
+
+5. ABSOLUTELY AVOID
+- "According to..." source attributions
+- Editorial commentary
+- Speculation beyond facts
+- Meta-discussion about newsletter
+- Excessive formatting or headers`;
+
+  const userPrompt = `Write a complete ${category} newsletter that synthesizes all these developments into ONE COHESIVE PIECE:
+
+Key Requirements:
+1. Write as a FINAL PRODUCT, not a synthesis
+2. Present as one flowing narrative
+3. Group related developments naturally
+4. Keep all specific numbers and details
+5. End with clear takeaways
+
+Content to transform into a newsletter:
+${allContent}`;
+
   try {
-    console.log(`Updating newsletter for ${category}...`);
-    const reportPath = path.join(REPORTS_DIR, `${category.toLowerCase()}.json`);
-    const result = await generateNewsletter(category, content, existingData);
-    fs.writeFileSync(reportPath, JSON.stringify({
+    // Get existing entries or initialize empty array
+    const existingEntries = existingData?.entries || [];
+    
+    // Split new content into individual entries
+    const newEntries = allContent.split('\n\n---\n\n').map(content => ({
+      content,
+      timestamp: new Date().toISOString()
+    }));
+
+    // Combine existing and new entries
+    const entries = [...existingEntries, ...newEntries];
+
+    // Get analysis using Claude
+    const analysisResponse = await anthropic.messages.create({
+      model: 'claude-3-opus-20240229',
+      max_tokens: 4000,
+      messages: [{
+        role: 'user',
+        content: `${systemPrompt}\n\n${userPrompt}`
+      }]
+    });
+
+    const analysis = analysisResponse.content[0].type === 'text' 
+      ? analysisResponse.content[0].text
+      : '';
+
+    const keywordResponse = await anthropic.messages.create({
+      model: 'claude-3-opus-20240229',
+      max_tokens: 1000,
+      messages: [{
+        role: 'user',
+        content: `Extract 5-7 key topics or themes as concise phrases. ONLY USE SHORT PHRASES/WORDS. NO PUNCTUATION OR NON ALPHABET CHARACTERS.\n\nContent to analyze:\n${analysis}`
+      }]
+    });
+
+    const keywords = keywordResponse.content[0].type === 'text'
+      ? keywordResponse.content[0].text.split('\n')
+      : [];
+
+    // Update the report with combined entries
+    const updatedReport = {
       category,
-      entries: result.entries,
-      analysis: result.analysis,
-      keywords: result.keywords,
+      entries,  // Use combined entries array
+      analysis,
+      keywords,
       lastUpdated: new Date().toISOString()
-    }, null, 2));
-    console.log(`Updated report saved for ${category} at ${reportPath}`);
-    return result;
+    };
+
+    // Save to file
+    const reportPath = path.join(REPORTS_DIR, `${category.toLowerCase()}.json`);
+    fs.writeFileSync(reportPath, JSON.stringify(updatedReport, null, 2));
+
   } catch (error) {
-    console.error(`Error updating newsletter for ${category}:`, error);
+    console.error(`Error updating ${category} newsletter:`, error);
     throw error;
   }
 }
@@ -208,19 +303,25 @@ async function processCsvFile() {
       columns: true,
       skip_empty_lines: true,
       quote: '"',
-      escape: '\\',
-      relax_quotes: true,
+      escape: '"',
+      relax_quotes: false,
       relax_column_count: true,
       trim: true,
       ltrim: true,
-      rtrim: true
+      rtrim: true,
+      cast: true,
+      cast_date: false
     });
 
     // Group content by Category
     const categoryMap = new Map<string, string[]>();
+    const validCategories = ['Finance', 'Tech', 'Global News', 'US News', 'Sports'];
+
+    // When processing records
     for (const record of records) {
       if (!record.Category || !record.Body || !record['Message-ID']) continue;
-      // Skip if this message has been processed already
+      // Skip if category is not valid or if message has been processed
+      if (!validCategories.includes(record.Category)) continue;
       const msgId = record['Message-ID'].trim();
       if (processedMessageIds.has(msgId)) continue;
       
@@ -228,7 +329,6 @@ async function processCsvFile() {
         categoryMap.set(record.Category, []);
       }
       categoryMap.get(record.Category)?.push(record.Body);
-      // Mark this message as processed
       processedMessageIds.add(msgId);
     }
 
