@@ -13,40 +13,6 @@ import time
 load_dotenv()
 
 
-"""
-AP News:
-                1. Go to: {SEARCH_URLS["AP News"].format(keyword)}
-                2. Click first article link: browser({{"command": "click", "selector": "div.PagePromo-content a"}})
-                3. Get the URL: browser({{"command": "evaluate", "code": "document.querySelector('link[rel=\"canonical\"]').getAttribute('href')"}})
-                4. Get the article title
-                5. Go to: www.google.com
-
-The Guardian:
-
-                1. Go to: {SEARCH_URLS["The Guardian"].format(keyword)}
-                2. Click first result: browser({{"command": "click", "selector": "div.g > div > div > div > a"}})
-                3. Get the URL: browser({{"command": "evaluate", "code": "document.querySelector('link[rel=\"canonical\"]').getAttribute('href')"}})
-                4. Get the article title
-BBC:
-                1. Go to: {SEARCH_URLS["BBC"].format(keyword)}
-                2. Click first result: browser({{"command": "click", "selector": "div.ssrcss-1ynlzyd-PromoSwitchLayoutAtBreakpoints a"}})
-                3. Get the URL: browser({{"command": "evaluate", "code": "document.querySelector('link[rel=\"canonical\"]').getAttribute('href')"}})
-                4. Get the article title
-
-                Fox News:
-                1. Go to: {SEARCH_URLS["Fox News"]["url"].format(keyword)}
-                2. Wait for search results: browser({{"command": "wait", "seconds": 5}})
-                3. Click first result: browser({{"command": "click", "selector": "div.search-results article a"}})
-                4. Wait for article: browser({{"command": "wait", "seconds": 2}})
-                5. Get the URL: browser({{"command": "evaluate", "code": "document.querySelector('link[rel=\"canonical\"]').getAttribute('href')"}})
-
-                The Hill:
-                1. Go to: {SEARCH_URLS["The Hill"].format(keyword)}
-                2. Click first result: browser({{"command": "click", "selector": "article.article-list__article a"}})
-                3. Get the URL: browser({{"command": "evaluate", "code": "document.querySelector('link[rel=\"canonical\"]').getAttribute('href')"}})
-                4. Get the article title
-
-"""
 class Source(BaseModel):
     title: str
     url: str
@@ -67,24 +33,6 @@ def load_keywords(filename: str = "keywords.json") -> List[str]:
     with open(filename, 'r') as f:
         data = json.load(f)
     return data.get("keywords", [])
-
-# Add after imports
-NEWS_SOURCES = [
-    "www.apnews.com",
-    "www.cnn.com",
-    "theguardian.com",
-    "www.propublica.org"
-]
-
-# Update the search URLs
-SEARCH_URLS = {
-    "AP News": "https://apnews.com/search?q={}",
-    "The Guardian": "https://www.google.co.uk/search?q={}&as_sitesearch=www.theguardian.com",
-    "BBC": "https://www.bbc.com/search?q={}",
-    "Fox News": "https://www.foxnews.com/search-results/search#q={}",
-    "The Hill": "https://thehill.com/?s={}&submit=Search",
-    "The Federalist": "https://thefederalist.com/?s={}"
-}
 
 def main():
     # Load keywords from JSON
@@ -115,17 +63,10 @@ def main():
                 print(f"\nResearching: {keyword}")
                 
                 prompt = f"""
-                Find a recent article about {keyword} from AP News.
-
-                1. Go to: {SEARCH_URLS["AP News"].format(keyword)}
-                2. Click first article link: browser({{"command": "click", "selector": "div.PagePromo-content a"}})
-                3. Get the URL: browser({{"command": "evaluate", "code": "document.querySelector('link[rel=\"canonical\"]').getAttribute('href')"}})
-                4. Store this URL and remember it
-                5. Get the article title
-
-                Return the article URL in ResearchResult format with the search phrase "{keyword}".
+                Find 3 reliable sources about {keyword} from www.google.com. Avoid sources with bias,
+                and prefer sources that are known for their accuracy and reliability. When outputting a 
+                source, include the title, url, and reliability notes.
                 """
-
                 research_response = client.act(
                     model=Anthropic(),
                     tools=[BrowserTool(instance)],
