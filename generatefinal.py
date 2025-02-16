@@ -97,6 +97,7 @@ def generate_newsletter_draft(analyses: dict) -> str:
     # Build content sections with clear category separation
     content_sections = []
     for category, analysis in analyses.items():
+
         section = f"Category: {category}\nContent:\n{analysis}"
         content_sections.append(section)
     combined_content = "\n\n".join(content_sections)
@@ -106,15 +107,17 @@ def generate_newsletter_draft(analyses: dict) -> str:
         f"- {category}" for category in available_categories
     ])
 
-    system_prompt = f"""You are creating a daily digest newsletter that synthesizes content from exactly these categories:
+    system_prompt = f"""Create a well-formatted multi-category informative newsletter from ONLY the provided content. For each category, write exactly 300-350 words, ensuring that the final newsletter is approximately {len(analyses) * 325} words. Use a friendly, engaging tone while preserving key details from the sources. Group the content under these exact category headings:
+
 {category_sections}
 
 KEY RULES:
 1. ONLY include content from the provided source materials
-2. NEVER generate content not present in sources
-3. ONLY cover these specific categories
-4. Maintain original details and facts
-5. Group content by these exact category names"""
+2. KEEP IT MOSTLY INFORMATIVE, NOT TOO ENGAGING. Use as much analysis from the sources as possible.
+3. NEVER generate content not present in sources
+4. ONLY cover these specific categories
+5. Maintain original details and facts
+6. Group content by these exact category names"""
 
     user_prompt = f"""Create a multi-category newsletter from ONLY the provided content. For each category:
 
@@ -122,13 +125,9 @@ KEY RULES:
 2. Do not add any information not present in sources
 3. Group under these exact category headings:
 {category_sections}
-4. STRICTLY maintain 400-500 words per section - this is crucial
+4. STRICTLY maintain 450 words per SECTION
 5. Use a friendly, engaging tone while maintaining factual accuracy
-
-IMPORTANT LENGTH REQUIREMENT:
-- Each section MUST be between 400-500 words
-- Current categories requiring 400-500 words each: {category_sections}
-- Total length should be {len(analyses) * 450} words approximately
+6. Do not add any non-newsletter content or content that is not FINAL VERSION READY. The Exact output is what will be displayed to the user.
 
 Content to synthesize by category:
 {combined_content}"""
@@ -138,15 +137,14 @@ Content to synthesize by category:
         {"role": "user", "content": user_prompt}
     ]
 
-    # Increase max_tokens to ensure we get full-length content
     try:
         logger.info(json.dumps({"event": "draft_generation_start"}))
         client = openai.OpenAI()
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4-0125-preview",  # Using GPT-4 Turbo
             messages=messages,
             temperature=0.7,
-            max_tokens=4000  # Increased to accommodate longer sections
+            max_tokens=4096  # Adjusted to maximum allowed tokens
         )
     except Exception as e:
         logger.error(json.dumps({
@@ -186,7 +184,8 @@ def evaluate_newsletter(content: str) -> tuple:
         "2. 2-3 specific suggestions for improving the newsletter\n\n"
         "Your response MUST start with 'Score: ' followed by a number, then 'Suggestions:' on a new line.\n\n"
         "Evaluate based on:\n"
-        "- Section lengths (should be 400-500 words each)\n"
+        "- Section lengths (should be 250-300 words EACH)\n"
+        "- No AI-generated tone: The content must sound natural and engaging, avoiding repetitive or overly formal language. It should use varied sentence structures and idiomatic expressions to feel distinctly human.\n"
         "- Writing quality and engagement\n"
         "- Factual accuracy and detail preservation\n"
         "- Overall structure and flow\n\n"
@@ -203,7 +202,7 @@ def evaluate_newsletter(content: str) -> tuple:
         client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         response = client.messages.create(
             model="claude-2",
-            max_tokens=1000,
+            max_tokens=4096,  # Adjusted to Claude's limit
             temperature=0.0,
             messages=[{"role": "user", "content": eval_prompt}]
         )
@@ -299,10 +298,10 @@ IMPROVEMENT FEEDBACK TO ADDRESS:
         logger.info(json.dumps({"event": "refinement_start"}))
         client = openai.OpenAI()
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4-0125-preview",  # Using GPT-4 Turbo
             messages=messages,
             temperature=0.7,
-            max_tokens=1500
+            max_tokens=4096  # Adjusted to maximum allowed tokens
         )
     except Exception as e:
         logger.error(json.dumps({
@@ -407,16 +406,31 @@ Content to synthesize by category:
 
         client = openai.OpenAI()
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4-0125-preview",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.7,
-            max_tokens=4000
+            max_tokens=4096  # Adjusted to maximum allowed tokens
         )
 
+        # Extract ONLY the generated newsletter content
         newsletter = response.choices[0].message.content.strip()
+
+        # Verify the content doesn't include the prompt
+        if newsletter.startswith("Create a multi-category newsletter"):
+            # If it does, try to extract just the actual content
+            content_start = newsletter.find("Content to synthesize by category:")
+            if content_start != -1:
+                newsletter = newsletter[content_start:].strip()
+            
+            # If we still have prompt text, remove everything before the first category
+            for category in categories:
+                category_start = newsletter.find(category)
+                if category_start != -1:
+                    newsletter = newsletter[category_start:].strip()
+                    break
 
         # Evaluate with Claude
         eval_prompt = (
@@ -426,30 +440,76 @@ Content to synthesize by category:
             "You MUST provide:\n"
             "1. A numerical score from 1-10 (you must give a number)\n"
             "2. 2-3 specific suggestions for improving the newsletter\n\n"
-            "Your response MUST start with 'Score: ' followed by a number.\n\n"
+            "Your response MUST start with 'Score: ' followed by a number, then 'Suggestions:' on a new line.\n\n"
             "Evaluate based on:\n"
             "- Section lengths (should be 400-500 words each)\n"
             "- Writing quality and engagement\n"
             "- Factual accuracy and detail preservation\n"
-            "- Overall structure and flow"
+            "- Overall structure and flow\n\n"
+            "Format exactly like this:\n"
+            "Score: [number]\n"
+            "Suggestions:\n"
+            "- [first suggestion]\n"
+            "- [second suggestion]\n"
+            "- [third suggestion]"
         )
 
         client = anthropic.Anthropic()
         response = client.messages.create(
             model="claude-2",
-            max_tokens=1000,
+            max_tokens=4096,  # Adjusted to Claude's limit
             temperature=0.0,
             messages=[{"role": "user", "content": eval_prompt}]
         )
         
-        eval_content = response.content[0].text if response.content else ""
-        score_match = re.search(r'Score:\s*(\d+(?:\.\d+)?)', eval_content, re.IGNORECASE)
-        score = float(score_match.group(1)) if score_match else 5.0
+        response_text = response.content[0].text if response.content else ""
+        
+        # Parse the response with improved error handling
+        score_match = re.search(r"^Score:\s*([0-9]+(?:\.[0-9]+)?)", response_text, re.MULTILINE)
+        suggestions_match = re.search(r"(?s)(Suggestions:\s*\n-.*)", response_text)
+
+        if not score_match or not suggestions_match:
+            logger.warning(json.dumps({
+                "event": "evaluation_parse_warning",
+                "message": "Claude response did not match expected format",
+                "response": response_text
+            }))
+            return newsletter, 5.0  # Default score if parsing fails
+
+        score_str = score_match.group(1)
+        try:
+            score = float(score_str)
+        except ValueError:
+            logger.warning(json.dumps({
+                "event": "evaluation_parse_warning",
+                "message": f"Could not convert score string to float: {score_str}"
+            }))
+            score = 5.0
+
+        # Validate score range
+        if score < 1 or score > 10:
+            logger.warning(json.dumps({
+                "event": "evaluation_range_warning",
+                "message": f"Score {score} is out of range [1, 10]",
+                "score": score
+            }))
+            score = max(1, min(10, score))  # Clamp to valid range
+
+        suggestions_text = suggestions_match.group(1)
+        
+        logger.info(json.dumps({
+            "event": "evaluation_success",
+            "score": score,
+            "suggestions": suggestions_text
+        }))
 
         return newsletter, score
 
     except Exception as e:
-        logger.error(f"Newsletter generation failed: {str(e)}")
+        logger.error(json.dumps({
+            "event": "newsletter_generation_error",
+            "error": str(e)
+        }))
         raise
 
 def main():
