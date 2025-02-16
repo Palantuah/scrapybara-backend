@@ -6,10 +6,10 @@ import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { parse } from 'csv-parse/sync';
 
-// Change .env to .env.local
+// Use .env.local
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
-// Add validation for required environment variables
+// Validate required environment variables
 const requiredEnvVars = ['OPENAI_API_KEY'];
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
@@ -22,7 +22,7 @@ const REPORTS_DIR = path.join(__dirname, '..', 'outputs', 'category_reports');
 
 console.log(`Reports directory: ${REPORTS_DIR}`);
 
-// Ensure outputs directory exists with better error handling
+// Ensure outputs directory exists
 try {
   if (!fs.existsSync(REPORTS_DIR)) {
     console.log(`Creating reports directory: ${REPORTS_DIR}`);
@@ -33,157 +33,168 @@ try {
   }
 } catch (err) {
   console.error('Error creating reports directory:', err);
-  process.exit(1);  // Exit if we can't create the directory
+  process.exit(1);
 }
 
-// Track processed Message-IDs to avoid duplicates (normalized)
+// Track processed Message-IDs (normalized) to avoid duplicates
 const processedMessageIds = new Set<string>();
 
-// Track the last processed line number (for when the CSV grows)
+// Pointer for number of lines processed so far
 let lastProcessedLine = 0;
 
-// Buffer to store header line
+// Buffer to store the header line
 let headerLine = "";
 
-// Cache the last CSV hash to avoid reprocessing unchanged data
+// Cache the last CSV hash to skip unchanged processing
 let lastCsvHash = "";
 
+// Helper function for delay
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Uses GPT-4-turbo-preview to generate a consolidated newsletter.
+ * The system prompt instructs the model to preserve source details and avoid added analysis.
+ */
 async function generateNewsletter(category: string, content: string, existingData?: any) {
   try {
     console.log(`Generating newsletter for ${category}...`);
-    console.log('Existing data:', existingData);
-    
+    // Load existing entries or start a new array
     const entries = existingData?.entries || [];
-    console.log(`Current entries count: ${entries.length}`);
-    
-    entries.push({
-      content,
+
+    // Split combined content into individual entries (assuming separator used in grouping)
+    const newEntries = content.split('\n\n---\n\n').map(entryContent => ({
+      content: entryContent.trim(),
       timestamp: new Date().toISOString()
-    });
-    console.log(`New entries count: ${entries.length}`);
+    }));
 
-    const allContent = entries.map((e: { content: string; timestamp: string }) => e.content).join('\n\n');
-    console.log(`Combined content length: ${allContent.length}`);
-    
-    const prompt = `Create a comprehensive ${category} newsletter based on all these updates:
-${allContent}
+    // Add new entries if they are not already present
+    for (const newEntry of newEntries) {
+      const contentExists = entries.some((entry: any) => entry.content === newEntry.content);
+      if (!contentExists) {
+        entries.push(newEntry);
+        console.log('Added new entry for', category);
+      } else {
+        console.log('Skipped duplicate entry for', category);
+      }
+    }
 
-IMPORTANT: ONLY include information that is directly relevant to the ${category} category. Completely ignore any content that is not specifically about ${category}.
+    console.log(`Final entry count for ${category}: ${entries.length}`);
+    // Combine entries using a separator
+    const allContent = entries.map((e: any) => e.content).join('\n\n---\n\n');
+    console.log(`Combined content length for ${category}: ${allContent.length}`);
 
-Create a well-structured newsletter that synthesizes all the relevant ${category} information above. Structure it with:
-- Latest Developments in ${category}
-- Key ${category} Trends
-- ${category} Market Analysis
-- Industry Insights
-- Future Outlook for ${category}
+    const systemPrompt = `You are a newsletter synthesizer that:
+1. Preserves the original phrasing and tone from source materials.
+2. Only combines what is explicitly present.
+3. Uses minimal connecting language.
+Do not add broader context, speculate, or change the tone.`;
 
-Ensure all important ${category}-related information is preserved and woven together cohesively. 
-DO NOT include information from other sectors or categories unless it directly impacts ${category}.`;
+    const userPrompt = `Create a consolidated ${category} newsletter that:
+1. Uses the exact numbers, quotes, and details from the source materials.
+2. Organizes related points together naturally.
+3. Presents the information as directly as in the sources.
+Do not add any extra analysis or context.
 
-    console.log('Sending to OpenAI...');
-    const { text } = await generateText({
-      model: openai('gpt-4o-mini'),
+Content to synthesize:
+${allContent}`;
+
+    // Use GPT-4-turbo-preview model (higher-tier for better quality)
+    const { text: generatedText } = await generateText({
+      model: openai('gpt-4-turbo-preview'),
       messages: [
-        { role: 'system', content: 'You are an expert newsletter writer who creates comprehensive newsletters for users using as much of the same language and format as possible of the original documents.' },
-        { role: 'user', content: prompt }
-      ]
-    });
-    console.log('Received response from OpenAI');
-
-    // After getting the analysis, extract keywords using GPT
-    console.log('Extracting keywords from analysis...');
-    const { text: keywordsText } = await generateText({
-      model: openai('gpt-4o-mini'),
-      messages: [
-        { role: 'system', content: 'You are an expert at identifying key topics and themes.' },
-        { role: 'user', content: `From the following ${category} newsletter, identify the 5-7 most important topics/keywords. 
-        Format your response as a simple comma-separated list with no explanations or additional text.
-        
-        Newsletter:
-        ${text}` }
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
       ]
     });
 
-    // Clean up the keywords response
-    const keywords = keywordsText
-      .split(',')
-      .map(k => k.trim())
-      .filter(k => k.length > 0);
-    
-    console.log('Extracted keywords:', keywords);
+    // Extract keywords using a dedicated prompt
+    const keywordPrompt = `Extract the 5-7 most important topics, phrases, or themes from this content. Focus on:
+1. Key events, developments, or announcements
+2. Important names and organizations
+3. Significant numbers or statistics
+4. Recurring themes or trends
+5. Notable quotes or statements
+
+Format each as a short, clear phrase. ONLY OUTPUT SHORT PHRASES/WORDS. NO PUNCTUATION OR NON ALPHABET CHARACTERS.
+
+Content to analyze:
+${generatedText}`;
+
+    const { text: keywordResponse } = await generateText({
+      model: openai('gpt-4-turbo-preview'),
+      messages: [
+        { role: 'system', content: 'You are a precise topic extractor. List only the most relevant phrases, one per line.' },
+        { role: 'user', content: keywordPrompt }
+      ]
+    });
+
+    // Split response into individual keywords/phrases
+    const keywords = keywordResponse.split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+      .slice(0, 7);  // Keep max 7 keywords
 
     return {
       entries,
-      analysis: text,
+      analysis: generatedText,
       keywords
     };
   } catch (error: any) {
     console.error('Error in generateNewsletter:', error);
     if (error?.lastError?.statusCode === 429) {
-      console.log('Rate limit hit, waiting 20 seconds...');
-      await new Promise(resolve => setTimeout(resolve, 20000));
+      console.log('Rate limit hit in generateNewsletter, waiting 20 seconds...');
+      await delay(20000);
       return generateNewsletter(category, content, existingData);
     }
     throw error;
   }
 }
 
-async function updateCategoryNewsletter(category: string, content: string) {
-  const fileName = `${category.toLowerCase().replace(/\s+/g, '_')}.json`;
-  const filePath = path.join(REPORTS_DIR, fileName);
-  
-  console.log(`Updating newsletter for category: ${category}`);
-  console.log(`File path: ${filePath}`);
-  
-  let existingData = null;
+/**
+ * Loads existing JSON data for a category, generates an updated newsletter,
+ * and writes the result to a file.
+ */
+async function updateCategoryNewsletter(category: string, content: string, existingData?: any) {
   try {
-    if (fs.existsSync(filePath)) {
-      console.log('Found existing file, reading content...');
-      existingData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      console.log('Successfully loaded existing data');
-    } else {
-      console.log('No existing file found, will create new one');
-    }
-  } catch (err) {
-    console.error(`Error reading existing newsletter for ${category}:`, err);
-  }
-
-  console.log('Generating new newsletter content...');
-  const updatedData = await generateNewsletter(category, content, existingData);
-  
-  try {
-    const fileContent = JSON.stringify({
+    console.log(`Updating newsletter for ${category}...`);
+    const reportPath = path.join(REPORTS_DIR, `${category.toLowerCase()}.json`);
+    const result = await generateNewsletter(category, content, existingData);
+    fs.writeFileSync(reportPath, JSON.stringify({
       category,
-      entries: updatedData.entries,
-      analysis: updatedData.analysis,
-      keywords: updatedData.keywords,
+      entries: result.entries,
+      analysis: result.analysis,
+      keywords: result.keywords,
       lastUpdated: new Date().toISOString()
-    }, null, 2);
-
-    console.log(`Writing ${fileContent.length} bytes to ${filePath}`);
-    fs.writeFileSync(filePath, fileContent);
-    console.log(`Successfully updated ${fileName}`);
-  } catch (err) {
-    console.error(`Error writing newsletter file for ${category}:`, err);
-    throw err;
+    }, null, 2));
+    console.log(`Updated report saved for ${category} at ${reportPath}`);
+    return result;
+  } catch (error) {
+    console.error(`Error updating newsletter for ${category}:`, error);
+    throw error;
   }
 }
 
+/**
+ * Computes an MD5 hash for the given content.
+ */
 function computeHash(content: string): string {
   return crypto.createHash('md5').update(content.trim()).digest('hex');
 }
 
+/**
+ * Polls the CSV file, groups rows by Category, and processes each group.
+ */
 async function processCsvFile() {
   try {
     if (!fs.existsSync(CSV_FILE)) {
       console.log('CSV file not found. Waiting for it to be created...');
-      lastProcessedLine = 0;
       return;
     }
 
     const fileContent = fs.readFileSync(CSV_FILE, 'utf-8');
-    console.log('Read CSV file, content length:', fileContent.length);
-
+    console.log('Read CSV file; content length:', fileContent.length);
     const currentHash = computeHash(fileContent);
     if (currentHash === lastCsvHash) {
       console.log('CSV content unchanged. Skipping processing.');
@@ -192,71 +203,60 @@ async function processCsvFile() {
     console.log('CSV content changed, processing...');
     lastCsvHash = currentHash;
 
-    const allLines = fileContent.split('\n').filter(line => line.trim().length > 0);
-    console.log(`Found ${allLines.length} non-empty lines`);
-
-    // Capture header if not yet captured
-    if (lastProcessedLine === 0) {
-      headerLine = allLines[0];
-      lastProcessedLine = 1; // start processing after header
-      console.log('Header captured:', headerLine);
-    }
-
-    if (allLines.length <= lastProcessedLine) {
-      console.log('No new data beyond header. Waiting for update...');
-      return;
-    }
-
-    const newLines = allLines.slice(lastProcessedLine);
-    console.log(`Processing ${newLines.length} new line(s).`);
-
-    // Prepend header to new lines to form valid CSV
-    const csvToParse = [headerLine, ...newLines].join('\n');
-    const records = parse(csvToParse, { 
-      columns: true, 
-      skip_empty_lines: true
+    // Parse entire CSV using csv-parse with more robust quote handling
+    const records = parse(fileContent, { 
+      columns: true,
+      skip_empty_lines: true,
+      quote: '"',
+      escape: '\\',
+      relax_quotes: true,
+      relax_column_count: true,
+      trim: true,
+      ltrim: true,
+      rtrim: true
     });
 
+    // Group content by Category
+    const categoryMap = new Map<string, string[]>();
     for (const record of records) {
-      if (record['Subject'] === 'Subject') continue; // skip header if parsed as record
-
-      if (record.Category && record['Message-ID']) {
-        // Clean up Message-ID by removing newlines and extra whitespace
-        const msgId = record['Message-ID']
-          .replace(/[\n\r]/g, '')
-          .replace(/^\s+|\s+$/g, '')
-          .replace(/^["']|["']$/g, '');
-
-        if (!processedMessageIds.has(msgId)) {
-          try {
-            // Only process if there's actual content
-            if (record.Body?.trim()) {
-              console.log(`Processing message for category: ${record.Category}`);
-              await updateCategoryNewsletter(record.Category, record.Body);
-              console.log(`Successfully processed message: ${msgId}`);
-            } else {
-              console.log(`Skipping empty content for message: ${msgId}`);
-            }
-            processedMessageIds.add(msgId);  // Track the ID even if content was empty
-          } catch (error) {
-            console.error(`Error processing message ${msgId}:`, error);
-          }
-        } else {
-          console.log(`Skipping duplicate message: ${msgId}`);
-        }
-      } else {
-        console.log('Skipping invalid record:', record);
+      if (!record.Category || !record.Body || !record['Message-ID']) continue;
+      // Skip if this message has been processed already
+      const msgId = record['Message-ID'].trim();
+      if (processedMessageIds.has(msgId)) continue;
+      
+      if (!categoryMap.has(record.Category)) {
+        categoryMap.set(record.Category, []);
       }
+      categoryMap.get(record.Category)?.push(record.Body);
+      // Mark this message as processed
+      processedMessageIds.add(msgId);
     }
 
-    lastProcessedLine = allLines.length;
-    console.log(`Finished processing. lastProcessedLine updated to ${lastProcessedLine}.`);
+    // Process each category (wait between categories to ease rate limiting)
+    for (const [category, contents] of categoryMap) {
+      console.log(`Processing category "${category}" with ${contents.length} new record(s)`);
+      try {
+        const reportPath = path.join(REPORTS_DIR, `${category.toLowerCase()}.json`);
+        let existingData = {};
+        if (fs.existsSync(reportPath)) {
+          existingData = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
+          console.log(`Loaded existing data for ${category}`);
+        }
+        const combinedContent = contents.join('\n\n---\n\n');
+        await updateCategoryNewsletter(category, combinedContent, existingData);
+        console.log(`Successfully updated category: ${category}`);
+      } catch (error) {
+        console.error(`Error processing category ${category}:`, error);
+      }
+      // Wait a short time between categories
+      await delay(2000);
+    }
   } catch (err) {
     console.error('Error processing CSV file:', err);
   }
 }
 
-// Instead of fs.watch, use setInterval to poll the CSV every 10 seconds.
+// Use setInterval to poll the CSV file every 10 seconds.
 setInterval(() => {
   processCsvFile().catch(err => console.error('Error during polling:', err));
 }, 10000);

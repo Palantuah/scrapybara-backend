@@ -3,6 +3,7 @@ import email
 from email.header import decode_header
 import pandas as pd
 import time
+import re
 
 # Email configuration
 user_email = "palantuah@gmail.com"
@@ -30,7 +31,6 @@ SENDER_CATEGORIES = {
     # Global News
     "reuters": "Global News", #reuters
     "bbc": "Global News", #bbc
-    "theguardian": "Global News", #the guardian
     "apnews": "Global News", #ap news
     "time": "Global News", #time
 
@@ -107,6 +107,29 @@ def process_email(msg):
         "Category": category
     }
 
+def clean_content(text):
+    """Clean email content by removing HTML and unnecessary formatting"""
+    if not text:
+        return ""
+        
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # Remove URLs
+    text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
+    
+    # Remove email addresses
+    text = re.sub(r'[\w\.-]+@[\w\.-]+', '', text)
+    
+    # Handle quotes - escape double quotes with another double quote
+    text = text.replace('"', '""')
+    
+    # Remove special characters and extra whitespace
+    text = re.sub(r'[\r\n\t]+', ' ', text)  # Replace newlines/tabs with space
+    text = re.sub(r'\s+', ' ', text)  # Normalize spaces
+    
+    return text.strip()
+
 def main():
     # Initialize tracking sets and dicts
     processed_emails = set()
@@ -166,17 +189,20 @@ def main():
                         print(f"New email received in category: {category}")
             
             if new_emails_found:
-                # Combine all categories and save to CSV
                 all_emails = []
-                for emails in categorized_emails.values():
-                    all_emails.extend(emails)
+                for category, emails in categorized_emails.items():
+                    # Only process valid categories
+                    if category in ["Finance", "Creative", "Global News", "US News", "Tech", "Sports"]:
+                        # Clean each email's content before adding
+                        for email_item in emails:
+                            email_item['Body'] = clean_content(email_item['Body'])
+                        all_emails.extend(emails)
+                
                 df = pd.DataFrame(all_emails)
-                # Drop duplicates based on Message-ID before saving
                 df.drop_duplicates(subset=['Message-ID'], keep='first', inplace=True)
-                # Sort by date to keep newest entries at the bottom
-                df['Date'] = pd.to_datetime(df['Date'])
-                df.sort_values('Date', inplace=True)
-                df.to_csv('email_database.csv', index=False)
+                
+                # Write CSV with minimal quoting
+                df.to_csv('email_database.csv', index=False, quoting=1, escapechar='\\')
             
             time.sleep(15)
             
